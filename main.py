@@ -5,13 +5,44 @@ from openai import AsyncOpenAI
 from agents.planner import plan_research
 from agents.researcher import research_sub_question
 from dotenv import load_dotenv
+from agents.synthesizer import synthesize_report, stream_synthesis
+from agents.orchestrator import orchestrate_research
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app):
+    yield
+
+app = FastAPI(lifespan=lifespan)
 client = AsyncOpenAI()
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+from sse_starlette.sse import EventSourceResponse
+import json
+
+@app.get("/api/research/stream")
+async def stream_research(question: str):
+    async def event_generator():
+        try:
+            yield {"data": json.dumps({"type": "status", "message": "Planning research..."})}
+            sub_questions = await plan_research(question)
+            yield {"data": json.dumps({"type": "sub_questions", "data": sub_questions})}
+
+            yield {"data": json.dumps({"type": "status", "message": "Researching..."})}
+            results = await orchestrate_research(sub_questions)
+            yield {"data": json.dumps({"type": "research_complete", "data": results})}
+
+            yield {"data": json.dumps({"type": "status", "message": "Writing report..."})}
+            async for chunk in stream_synthesis(question, results):
+                yield {"data": json.dumps({"type": "report_chunk", "chunk": chunk})}
+
+            yield {"data": json.dumps({"type": "done"})}
+        except Exception as e:
+            yield {"data": json.dumps({"type": "error", "message": str(e)})}
+
+    return EventSourceResponse(event_generator())
