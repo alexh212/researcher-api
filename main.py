@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from cache import get_cached, set_cached
 from sse_starlette.sse import EventSourceResponse
 import json
+from database import save_session
+import time
 
 load_dotenv()
 
@@ -29,11 +31,11 @@ def health():
 async def stream_research(question: str):
     async def event_generator():
         try:
+            start = time.time()
             yield {"data": json.dumps({"type": "status", "message": "Planning research..."})}
             sub_questions = await plan_research(question)
             yield {"data": json.dumps({"type": "sub_questions", "data": sub_questions})}
 
-            # Check cache
             cached = get_cached(question)
             if cached:
                 yield {"data": json.dumps({"type": "status", "message": "Found cached research, writing report..."})}
@@ -45,8 +47,13 @@ async def stream_research(question: str):
                 yield {"data": json.dumps({"type": "research_complete", "data": results})}
 
             yield {"data": json.dumps({"type": "status", "message": "Writing report..."})}
+            full_report = ""
             async for chunk in stream_synthesis(question, results):
+                full_report += chunk
                 yield {"data": json.dumps({"type": "report_chunk", "chunk": chunk})}
+
+            duration_ms = int((time.time() - start) * 1000)
+            await save_session(question, sub_questions, full_report, duration_ms)
 
             yield {"data": json.dumps({"type": "done"})}
         except Exception as e:
