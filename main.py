@@ -1,17 +1,14 @@
 from fastapi import FastAPI
-from database import supabase
-from search import search_web
-from openai import AsyncOpenAI
 from agents.planner import plan_research
-from agents.researcher import research_sub_question
-from dotenv import load_dotenv
-from agents.synthesizer import synthesize_report, stream_synthesis
+from agents.synthesizer import stream_synthesis
 from agents.orchestrator import orchestrate_research
 from contextlib import asynccontextmanager
 from cache import get_cached, set_cached
 from sse_starlette.sse import EventSourceResponse
-import json
 from database import save_session
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import json
 import time
 
 load_dotenv()
@@ -21,19 +18,26 @@ async def lifespan(app):
     yield
 
 app = FastAPI(lifespan=lifespan)
-client = AsyncOpenAI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 @app.get("/api/research/stream")
-async def stream_research(question: str):
+async def stream_research(question: str, num_agents: int = 4):
     async def event_generator():
         try:
             start = time.time()
             yield {"data": json.dumps({"type": "status", "message": "Planning research..."})}
-            sub_questions = await plan_research(question)
+            sub_questions = await plan_research(question, num_agents)
             yield {"data": json.dumps({"type": "sub_questions", "data": sub_questions})}
 
             cached = get_cached(question)

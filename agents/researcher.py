@@ -39,7 +39,6 @@ async def research_sub_question(sub_question: str) -> dict:
         }
     ]
 
-    # First call - model decides to use the tool
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
@@ -49,15 +48,11 @@ async def research_sub_question(sub_question: str) -> dict:
 
     message = response.choices[0].message
 
-    # If the model called the search tool
     if message.tool_calls:
         tool_call = message.tool_calls[0]
         query = json.loads(tool_call.function.arguments)["query"]
-        
-        # Execute the search
         search_results = await search_web(query)
-        
-        # Feed results back to the model
+
         messages.append(message)
         messages.append({
             "role": "tool",
@@ -65,7 +60,6 @@ async def research_sub_question(sub_question: str) -> dict:
             "content": json.dumps(search_results)
         })
 
-        # Second call - model writes the summary
         final_response = await client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages
@@ -77,7 +71,6 @@ async def research_sub_question(sub_question: str) -> dict:
             "sources": [r["url"] for r in search_results]
         }
 
-    # If model didn't use the tool, return what it said anyway
     return {
         "sub_question": sub_question,
         "summary": message.content,

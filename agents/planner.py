@@ -7,7 +7,7 @@ load_dotenv()
 
 client = AsyncOpenAI()
 
-async def plan_research(question: str) -> list[str]:
+async def plan_research(question: str, num_agents: int = 4) -> list[str]:
     if not question.strip():
         raise ValueError("Question cannot be empty")
     
@@ -16,16 +16,16 @@ async def plan_research(question: str) -> list[str]:
         messages=[
             {
                 "role": "system",
-                "content": """You are a research planner. Given a question, break it down into 3-4 focused sub-questions that can be researched independently and in parallel.
+                "content": f"""You are a research planner. Given a question, break it down into exactly {num_agents} focused sub-questions that can be researched independently and in parallel.
                 
-Return ONLY a JSON array of strings. No preamble, no explanation, no markdown. Just the array.
+Return ONLY a JSON array of exactly {num_agents} strings. No preamble, no explanation, no markdown. Just the array.
 
 Example:
 ["What were the environmental conditions before the event?", "What evidence exists for the cause?", "What was the immediate impact?", "What were the long term consequences?"]"""
             },
             {
                 "role": "user",
-                "content": f"Break this question into 3-4 research sub-questions: {question}"
+                "content": f"Break this question into exactly {num_agents} research sub-questions: {question}"
             }
         ]
     )
