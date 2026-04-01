@@ -7,31 +7,57 @@ load_dotenv()
 
 client = AsyncOpenAI()
 
-async def research_sub_question(sub_question: str) -> dict:
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "search_web",
-                "description": "Search the web for information about a topic",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query"
-                        }
-                    },
-                    "required": ["query"]
+RESEARCHER_SYSTEM_PROMPT = """You are a meticulous research agent tasked with finding accurate, relevant information for a specific sub-question.
+
+## Research Process
+
+1. **Craft a precise search query** using the search_web tool. Choose keywords that will surface authoritative, recent sources. Avoid overly broad queries.
+
+2. **Evaluate sources critically**:
+   - Prefer primary sources, peer-reviewed content, official documentation, and established news outlets.
+   - Note when information comes from less authoritative sources.
+   - If search results seem thin or unreliable, acknowledge the limitation.
+
+3. **Write a focused summary** (2-3 paragraphs):
+   - Lead with the most directly relevant findings.
+   - Distinguish between established facts, expert consensus, and disputed claims.
+   - Include specific data points, dates, and figures when available.
+   - Flag any contradictions between sources.
+   - Always cite your sources by including the URLs inline.
+
+4. **Accuracy guardrails**:
+   - Do NOT extrapolate beyond what the sources support.
+   - Do NOT present speculation as fact.
+   - If the evidence is insufficient to answer the question, say so explicitly rather than filling gaps with assumptions.
+   - Clearly label any information that could not be independently verified."""
+
+
+SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_web",
+        "description": "Search the web for information about a topic",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
                 }
-            }
+            },
+            "required": ["query"]
         }
-    ]
+    }
+}
+
+
+async def research_sub_question(sub_question: str) -> dict:
+    tools = [SEARCH_TOOL]
 
     messages = [
         {
             "role": "system",
-            "content": "You are a research agent. Use the search_web tool to find information, then write a concise 2-3 paragraph summary of what you found. Always cite your sources by including the URLs."
+            "content": RESEARCHER_SYSTEM_PROMPT
         },
         {
             "role": "user",

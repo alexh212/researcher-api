@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from agents.planner import plan_research
 from agents.synthesizer import stream_synthesis
 from agents.orchestrator import orchestrate_research
+from agents.evaluator import evaluate_report
 from contextlib import asynccontextmanager
 from cache import get_cached, set_cached
 from sse_starlette.sse import EventSourceResponse
@@ -59,6 +60,10 @@ async def stream_research(question: str, num_agents: int = 4):
             async for chunk in stream_synthesis(question, results):
                 full_report += chunk
                 yield {"data": json.dumps({"type": "report_chunk", "chunk": chunk})}
+
+            yield {"data": json.dumps({"type": "status", "message": "Evaluating report quality..."})}
+            evaluation = await evaluate_report(question, results, full_report)
+            yield {"data": json.dumps({"type": "evaluation", "data": evaluation})}
 
             duration_ms = int((time.time() - start) * 1000)
             await save_session(question, sub_questions, full_report, duration_ms)
