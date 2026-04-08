@@ -1,8 +1,7 @@
 import json
 from openai import AsyncOpenAI
-import os
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI()
 
 EVALUATOR_SYSTEM_PROMPT = """You are a research quality evaluator. Given an original question, the research inputs that were gathered, and the final synthesized report, evaluate the report on the following dimensions.
 

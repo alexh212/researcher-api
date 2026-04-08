@@ -1,9 +1,6 @@
 import json
 from openai import AsyncOpenAI
 from search import search_web
-from dotenv import load_dotenv
-
-load_dotenv()
 
 client = AsyncOpenAI()
 

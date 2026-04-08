@@ -3,7 +3,6 @@ from agents.planner import plan_research
 from agents.synthesizer import stream_synthesis
 from agents.orchestrator import orchestrate_research
 from agents.evaluator import evaluate_report
-from contextlib import asynccontextmanager
 from cache import get_cached, set_cached
 from sse_starlette.sse import EventSourceResponse
 from database import save_session
@@ -14,11 +13,7 @@ import time
 
 load_dotenv()
 
-@asynccontextmanager
-async def lifespan(app):
-    yield
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,

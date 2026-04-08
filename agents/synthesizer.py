@@ -1,7 +1,6 @@
 from openai import AsyncOpenAI
-import os
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI()
 
 SYNTHESIZER_SYSTEM_PROMPT = """You are a senior research analyst producing a definitive markdown report from multiple independent research inputs.
 
@@ -44,26 +43,6 @@ def _build_research_context(research_results: list[dict]) -> str:
         if sources:
             research_context += f"Sources: {', '.join(sources[:3])}\n"
     return research_context
-
-
-async def synthesize_report(question: str, research_results: list[dict]) -> str:
-    research_context = _build_research_context(research_results)
-
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": SYNTHESIZER_SYSTEM_PROMPT
-            },
-            {
-                "role": "user",
-                "content": f"Original question: {question}\n\nResearch inputs:\n{research_context}\n\nSynthesize a comprehensive markdown report answering the original question."
-            }
-        ]
-    )
-
-    return response.choices[0].message.content
 
 
 async def stream_synthesis(question: str, research_results: list[dict]):
