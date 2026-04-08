@@ -1,5 +1,6 @@
-import os
 import json
+import os
+
 from upstash_redis import Redis
 
 redis = Redis(
@@ -9,16 +10,25 @@ redis = Redis(
 
 CACHE_TTL = 60 * 60 * 24  # 24 hours
 
+
 def make_cache_key(question: str) -> str:
     return f"research:{question.lower().strip()}"
 
+
 def get_cached(question: str):
     key = make_cache_key(question)
-    data = redis.get(key)
-    if data:
-        return json.loads(data)
+    try:
+        data = redis.get(key)
+        if data:
+            return json.loads(data)
+    except Exception:
+        pass
     return None
+
 
 def set_cached(question: str, results: list[dict]):
     key = make_cache_key(question)
-    redis.set(key, json.dumps(results), ex=CACHE_TTL)
+    try:
+        redis.set(key, json.dumps(results), ex=CACHE_TTL)
+    except Exception:
+        pass

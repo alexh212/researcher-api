@@ -52,7 +52,9 @@ async def plan_research(question: str, num_agents: int = 4) -> list[str]:
     try:
         sub_questions = json.loads(content)
         if not isinstance(sub_questions, list):
-            raise ValueError("Response is not a list")
+            raise ValueError("Planner response is not a list")
+        if len(sub_questions) != num_agents:
+            raise ValueError(f"Planner returned {len(sub_questions)} sub-questions, expected {num_agents}")
         return sub_questions
     except json.JSONDecodeError:
         raise ValueError(f"Planner returned invalid JSON: {content}")

@@ -1,15 +1,17 @@
-from fastapi import FastAPI
-from agents.planner import plan_research
-from agents.synthesizer import stream_synthesis
-from agents.orchestrator import orchestrate_research
-from agents.evaluator import evaluate_report
-from cache import get_cached, set_cached
-from sse_starlette.sse import EventSourceResponse
-from database import save_session
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 import json
 import time
+
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
+
+from agents.evaluator import evaluate_report
+from agents.orchestrator import orchestrate_research
+from agents.planner import plan_research
+from agents.synthesizer import stream_synthesis
+from cache import get_cached, set_cached
+from database import save_session
 
 load_dotenv()
 

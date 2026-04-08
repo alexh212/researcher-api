@@ -1,5 +1,7 @@
 import json
+
 from openai import AsyncOpenAI
+
 from search import search_web
 
 client = AsyncOpenAI()

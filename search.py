@@ -1,7 +1,9 @@
 import os
+
 import httpx
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
 
 async def search_web(query: str) -> list:
     async with httpx.AsyncClient() as client:
@@ -14,6 +16,7 @@ async def search_web(query: str) -> list:
                 "search_depth": "basic"
             }
         )
+        response.raise_for_status()
         data = response.json()
         return [
             {
