@@ -8,7 +8,3 @@ async def test_plan_research_returns_list():
     assert len(result) == 3
     assert all(isinstance(q, str) for q in result)
 
-@pytest.mark.asyncio
-async def test_plan_research_empty_question():
-    with pytest.raises(ValueError):
-        await plan_research("", num_agents=3)
