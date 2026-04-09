@@ -1,8 +1,9 @@
 import json
+import os
 import time
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
@@ -14,6 +15,19 @@ from cache import get_cached, set_cached
 from database import save_session
 
 load_dotenv()
+
+_REQUIRED_ENV_VARS = [
+    "OPENAI_API_KEY",
+    "TAVILY_API_KEY",
+    "UPSTASH_REDIS_REST_URL",
+    "UPSTASH_REDIS_REST_TOKEN",
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+]
+
+missing = [v for v in _REQUIRED_ENV_VARS if not os.getenv(v)]
+if missing:
+    raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 app = FastAPI()
 
@@ -35,6 +49,11 @@ def health():
 
 @app.get("/api/research/stream")
 async def stream_research(question: str, num_agents: int = 4):
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    if not (2 <= num_agents <= 12):
+        raise HTTPException(status_code=400, detail="num_agents must be between 2 and 12")
+
     async def event_generator():
         try:
             start = time.time()

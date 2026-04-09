@@ -30,9 +30,6 @@ Example:
 
 
 async def plan_research(question: str, num_agents: int = 4) -> list[str]:
-    if not question.strip():
-        raise ValueError("Question cannot be empty")
-    
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
