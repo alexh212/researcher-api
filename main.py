@@ -57,27 +57,27 @@ async def stream_research(question: str, num_agents: int = 4):
     async def event_generator():
         try:
             start = time.time()
-            yield {"data": json.dumps({"type": "status", "message": "Planning research..."})}
+            yield {"data": json.dumps({"type": "status", "status": "planning", "message": "Planning research..."})}
             sub_questions = await plan_research(question, num_agents)
             yield {"data": json.dumps({"type": "sub_questions", "data": sub_questions})}
 
             cached = get_cached(question)
             if cached:
-                yield {"data": json.dumps({"type": "status", "message": "Found cached research, writing report..."})}
+                yield {"data": json.dumps({"type": "status", "status": "writing", "message": "Found cached results, writing report..."})}
                 results = cached
             else:
-                yield {"data": json.dumps({"type": "status", "message": "Researching..."})}
+                yield {"data": json.dumps({"type": "status", "status": "researching", "message": "Researching..."})}
                 results = await orchestrate_research(sub_questions)
                 set_cached(question, results)
                 yield {"data": json.dumps({"type": "research_complete", "data": results})}
 
-            yield {"data": json.dumps({"type": "status", "message": "Writing report..."})}
+            yield {"data": json.dumps({"type": "status", "status": "writing", "message": "Writing report..."})}
             full_report = ""
             async for chunk in stream_synthesis(question, results):
                 full_report += chunk
                 yield {"data": json.dumps({"type": "report_chunk", "chunk": chunk})}
 
-            yield {"data": json.dumps({"type": "status", "message": "Evaluating report quality..."})}
+            yield {"data": json.dumps({"type": "status", "status": "evaluating", "message": "Evaluating report quality..."})}
             evaluation = await evaluate_report(question, results, full_report)
             yield {"data": json.dumps({"type": "evaluation", "data": evaluation})}
 
