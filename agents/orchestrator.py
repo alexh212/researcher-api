@@ -4,6 +4,8 @@ from agents.researcher import research_sub_question
 
 async def orchestrate_research(sub_questions: list[str]) -> list[dict]:
     tasks = [research_sub_question(q) for q in sub_questions]
+    # return_exceptions=True prevents one failing agent from cancelling all others.
+    # Exceptions are returned as values and handled per-item below.
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     output = []

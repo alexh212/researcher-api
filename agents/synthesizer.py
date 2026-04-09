@@ -41,7 +41,7 @@ def _build_research_context(research_results: list[dict]) -> str:
             research_context += f"{result['summary']}\n"
         sources = result.get('sources', [])
         if sources:
-            research_context += f"Sources: {', '.join(sources[:3])}\n"
+            research_context += f"Sources: {', '.join(sources[:3])}\n"  # cap at 3 to keep context size manageable
     return research_context
 
 

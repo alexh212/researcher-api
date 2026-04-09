@@ -22,7 +22,7 @@ def get_cached(question: str):
         if data:
             return json.loads(data)
     except Exception:
-        pass
+        pass  # Cache is best-effort — a Redis failure should not break a research request
     return None
 
 
@@ -31,4 +31,4 @@ def set_cached(question: str, results: list[dict]):
     try:
         redis.set(key, json.dumps(results), ex=CACHE_TTL)
     except Exception:
-        pass
+        pass  # Same — write failures are acceptable, the request still completes

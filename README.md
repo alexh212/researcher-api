@@ -14,10 +14,6 @@ Enter any question and a planner agent breaks it into focused sub-questions. Up 
 - **Caching** — Upstash Redis caches results for 24 hours
 - **Persistence** — Supabase PostgreSQL stores all sessions
  
-## Tech stack
- 
-FastAPI, Python, OpenAI API, Tavily Search API, Supabase, PostgreSQL, Upstash Redis, Next.js, TypeScript, pytest, GitHub Actions, Render, Vercel
- 
 ## Live demo
  
 https://researcher-web-nine.vercel.app
@@ -36,7 +32,11 @@ uvicorn main:app --reload
 ## Tests
  
 ```bash
-pytest
+# Unit tests (no API keys needed)
+venv/bin/python -m pytest tests/test_cache.py tests/test_main.py -v
+
+# Integration tests (require real API keys in .env)
+venv/bin/python -m pytest tests/test_planner.py tests/test_orchestrator.py tests/test_evaluator.py -v
 ```
  
 ## Environment variables

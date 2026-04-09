@@ -74,6 +74,9 @@ async def research_sub_question(sub_question: str) -> dict:
     message = response.choices[0].message
 
     if message.tool_calls:
+        # OpenAI function calling requires two turns: first the model decides to call
+        # the tool and returns its arguments, then we execute the tool and send the
+        # results back so the model can write its final summary.
         tool_call = message.tool_calls[0]
         query = json.loads(tool_call.function.arguments)["query"]
         search_results = await search_web(query)
