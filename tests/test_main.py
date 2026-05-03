@@ -1,7 +1,26 @@
+import pytest
 from fastapi.testclient import TestClient
+from access import UserContext
+from auth import get_authenticated_user
 from main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def authenticated_user_override():
+    def fake_user() -> UserContext:
+        return UserContext(
+            id="user-1",
+            email="user@example.com",
+            signed_in=True,
+            display_name=None,
+            avatar_url=None,
+        )
+
+    app.dependency_overrides[get_authenticated_user] = fake_user
+    yield
+    app.dependency_overrides.pop(get_authenticated_user, None)
 
 
 def test_health():

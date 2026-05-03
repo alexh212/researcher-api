@@ -3,7 +3,7 @@ import os
 import time
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
@@ -11,8 +11,10 @@ from agents.evaluator import evaluate_report
 from agents.orchestrator import orchestrate_research
 from agents.planner import plan_research
 from agents.synthesizer import stream_synthesis
+from access import UserContext, has_access
+from auth import get_authenticated_user
 from cache import get_cached, set_cached
-from database import save_session
+from database import save_session, upsert_user
 
 load_dotenv()
 
@@ -46,6 +48,20 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/me")
+async def get_me(user: UserContext = Depends(get_authenticated_user)):
+    if not has_access(user, "read_self"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    await upsert_user(user)
+    return {
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "avatar_url": user.avatar_url,
+    }
+
 
 @app.get("/api/research/stream")
 async def stream_research(question: str, num_agents: int = 4):
