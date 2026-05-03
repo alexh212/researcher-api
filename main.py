@@ -64,7 +64,13 @@ async def get_me(user: UserContext = Depends(get_authenticated_user)):
 
 
 @app.get("/api/research/stream")
-async def stream_research(question: str, num_agents: int = 4):
+async def stream_research(
+    question: str,
+    num_agents: int = 4,
+    user: UserContext = Depends(get_authenticated_user),
+):
+    if not has_access(user, "generate_report"):
+        raise HTTPException(status_code=403, detail="Forbidden")
     if not question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     if not (2 <= num_agents <= 12):
