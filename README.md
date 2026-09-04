@@ -12,7 +12,12 @@ Enter any question and a planner agent breaks it into focused sub-questions. Up 
 - **Research agents** — up to 12 parallel async agents using OpenAI function calling and Tavily search
 - **Synthesis agent** — streams a markdown report from all research results over SSE
 - **Caching** — Upstash Redis caches results for 24 hours
-- **Persistence** — Supabase PostgreSQL stores all sessions
+- **Evaluator** — an LLM-as-judge pass scores the finished report on five
+  dimensions (relevance, accuracy, source coverage, coherence, completeness) and
+  returns strengths, suggested improvements, and flags. Streamed to the client
+  as an `evaluation` event.
+- **Persistence** — Supabase PostgreSQL stores all sessions, including
+  end-to-end `duration_ms` per run
  
 ## Live demo
  
@@ -49,3 +54,26 @@ SUPABASE_KEY=
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 ```
+
+## Known limitations
+
+- **The evaluator measures faithfulness, not accuracy.** Its "accuracy"
+  dimension only checks whether the report is supported by the research inputs
+  that were gathered — it never verifies those inputs against the world. A
+  confidently wrong source that the report faithfully summarises scores well.
+  The dimension is misnamed; renaming it is the next change.
+- **One judge, and the scores are averaged.** A single OpenAI model evaluates,
+  and `overall_score` is a weighted mean of the five dimensions. There is no
+  second opinion and no way to see disagreement between evaluators.
+- Prototype. Built to explore multi-agent orchestration, not to run in
+  production.
+
+## What I'd build next
+
+- Rename the `accuracy` dimension to `faithfulness` so the metric matches what
+  it measures.
+- Put the judge behind a provider-independent interface with an OpenAI and a
+  Claude implementation, keep both sets of scores separately, and surface
+  disagreement rather than averaging it away.
+- Source-level verification, so a claim can be checked against the source it
+  cites rather than against the research bundle as a whole.

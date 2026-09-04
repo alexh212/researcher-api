@@ -3,18 +3,22 @@ import os
 import time
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from sse_starlette.sse import EventSourceResponse
 
-from agents.evaluator import evaluate_report
-from agents.orchestrator import orchestrate_research
-from agents.planner import plan_research
-from agents.synthesizer import stream_synthesis
-from cache import get_cached, set_cached
-from database import save_session
-
+# Must run before the local imports below: cache.py, database.py and search.py
+# read their credentials at module scope, so importing them first leaves those
+# clients constructed with None and startup fails from a clean shell.
 load_dotenv()
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from sse_starlette.sse import EventSourceResponse  # noqa: E402
+
+from agents.evaluator import evaluate_report  # noqa: E402
+from agents.orchestrator import orchestrate_research  # noqa: E402
+from agents.planner import plan_research  # noqa: E402
+from agents.synthesizer import stream_synthesis  # noqa: E402
+from cache import get_cached, set_cached  # noqa: E402
+from database import save_session  # noqa: E402
 
 _REQUIRED_ENV_VARS = [
     "OPENAI_API_KEY",
@@ -42,6 +46,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+def root():
+    """Service index.
+
+    Without this, GET / returns a bare 404, which reads as a dead deployment to
+    anyone who opens the Render URL directly.
+    """
+    return {
+        "service": "Scout research API",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "frontend": "https://researcher-web-nine.vercel.app",
+    }
+
 
 @app.get("/health")
 def health():
