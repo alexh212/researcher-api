@@ -60,7 +60,14 @@ CI runs the full suite on every push, including the three integration tests, so 
 - **`overall_score` isn't computed by any code.** The prompt asks the model for "a 1–5 weighted average" but no weights are defined anywhere in the repo — whatever number the model returns is passed through unvalidated.
 - **The cache is wrong twice over.** The cache key ignores `num_agents`, so a 12-agent request can be served research cached under a 4-agent run for the same question text. And the planner runs before the cache is checked, so every cache hit still burns a planner LLM call and shows the client sub-questions that don't match the cached research. On top of that, a cache hit never emits `research_complete` at all — that event only fires in the miss branch — so the frontend's agent cards stay empty on a hit despite a commit titled "complete agent cards on cache hit."
 - **One search per agent, no retry, no timeout.** Each research agent takes only `tool_calls[0]`; any further tool calls the model makes are silently dropped, and there's no second round of searching after it sees results. Five Tavily results at `search_depth: "basic"` is the entire evidence base per sub-question. Nothing in the app sets a timeout — not the `httpx.AsyncClient`, not any of the four OpenAI clients — so a slow upstream can stall the stream indefinitely. `tenacity` is in `requirements.txt` but never imported.
-- **Session persistence is silently best-effort, and write-only.** The Supabase insert is wrapped in a bare `except Exception: pass` with no logging, so an outage produces no signal. Nothing in the codebase reads the `sessions` table back — there's no history endpoint, so stored reports are currently unreachable.
+- **Session persistence is dead, and the code can't tell.** The Supabase project
+  the app writes to no longer resolves — `NXDOMAIN` on the host in `SUPABASE_URL`.
+  Free projects are paused after a week idle and deleted at 90 days. Because
+  `database.py:22` wraps the insert in a bare `except Exception: pass` with no
+  logging, every run since has failed to persist without producing any signal.
+  Nothing reads the `sessions` table back either, so there was no second way to
+  notice. The swallowed exception is the actual bug; the dead project is just
+  what it hid.
 - **Neither JSON-producing prompt is hardened.** The planner does a bare `json.loads`; a markdown-fenced response raises and kills the whole run as an SSE error. The evaluator degrades instead of crashing, but its own fallback returns 0 for every dimension, and `tests/test_evaluator.py` asserts `1 <= scores[dim] <= 5` — meaning the documented degradation path is actually a test failure, not a covered case. Neither prompt uses `response_format={"type": "json_object"}`.
 - **The endpoint is public and unmetered.** No API key, no rate limit, no per-IP quota — any caller can spend OpenAI and Tavily credits on demand. The CORS allowlist doesn't help here; it constrains browsers, not curl, and one of its three entries is a stale Vercel preview URL.
 - **requirements.txt is a raw `pip freeze`,** not a dependency list — it includes packages like pyiceberg, cryptography, and rich that nothing in the project imports. There's no pyproject.toml and no deployment config in the repo at all (no Dockerfile, no render.yaml); the live Render service is configured entirely outside the codebase.
@@ -72,4 +79,7 @@ CI runs the full suite on every push, including the three integration tests, so 
 - Rename the evaluator's `accuracy` dimension to `faithfulness` so the metric's name matches what it measures.
 - Put the judge behind a provider-independent interface with OpenAI and Claude implementations, keep both score sets separate, and surface disagreement instead of averaging it away — and compute `overall_score` in Python from explicit weights instead of asking the model for it.
 - Fix the cache: include `num_agents` in the key, check the cache before running the planner, store sub-questions alongside results, and emit `research_complete` on a hit.
+- Log the Supabase failure instead of swallowing it, then either re-provision the
+  project or drop the dependency. Right now the code carries a persistence layer
+  that does nothing.
 - Gate the endpoint before anything else — an API key or per-IP rate limit on `/api/research/stream`, plus explicit `httpx` and OpenAI timeouts, so an unauthenticated caller can't run up the bill or hold a stream open forever.
