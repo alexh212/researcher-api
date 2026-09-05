@@ -41,7 +41,7 @@ async def test_evaluate_report_returns_valid_structure():
     assert "overall_score" in evaluation
 
     scores = evaluation["scores"]
-    expected_dimensions = ["relevance", "accuracy", "source_coverage", "coherence", "completeness"]
+    expected_dimensions = ["relevance", "faithfulness", "source_coverage", "coherence", "completeness"]
     for dim in expected_dimensions:
         assert dim in scores
         assert isinstance(scores[dim], (int, float))

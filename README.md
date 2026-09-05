@@ -7,7 +7,7 @@ A FastAPI service that decomposes a question into sub-questions, researches each
 
 ## The problem
 
-The hard part is holding a multi-stage, multi-agent pipeline together inside one long-lived HTTP response. A single request fans out to up to 12 concurrent OpenAI agents, each doing a two-turn function-calling exchange against a live web-search API, then funnels back into a streaming synthesis call and a judging pass — while the client needs incremental progress instead of five minutes of silence. That forces every stage to tolerate partial failure without killing the whole run, and it means being honest about what the judging pass can actually prove: its "accuracy" score only checks faithfulness to the retrieved research, never truth.
+The hard part is holding a multi-stage, multi-agent pipeline together inside one long-lived HTTP response. A single request fans out to up to 12 concurrent OpenAI agents, each doing a two-turn function-calling exchange against a live web-search API, then funnels back into a streaming synthesis call and a judging pass — while the client needs incremental progress instead of five minutes of silence. That forces every stage to tolerate partial failure without killing the whole run, and it means being honest about what the judging pass can actually prove: its `faithfulness` score only checks whether the report matches the retrieved research, never whether that research is true.
 
 ## How it works
 
@@ -17,7 +17,7 @@ Everything is one endpoint: `GET /api/research/stream?question=...&num_agents=..
 2. `get_cached` (`cache.py:21`) checks Upstash Redis under `research:{question.lower().strip()}:{num_agents}`, 24h TTL. `num_agents` is in the key because the planner splits the question into exactly that many sub-questions, so the same question at 4 and at 12 agents is genuinely different research.
 3. On a miss: `status: researching` → `orchestrate_research` (`agents/orchestrator.py:5`) runs `asyncio.gather(..., return_exceptions=True)` over `research_sub_question` (`agents/researcher.py:53`). Each agent does one OpenAI function call, executes `search_web` (`search.py:8`, POSTs to `api.tavily.com/search`, `max_results: 5`, `search_depth: "basic"`), and writes a summary from the results. A dead agent becomes an `{"error": True}` placeholder instead of killing the batch. Cached and emitted as `research_complete`.
 4. `status: writing` → `stream_synthesis` (`agents/synthesizer.py:48`) concatenates the summaries (failed sub-questions marked inline, sources capped at three each) and streams one `gpt-4o-mini` completion, forwarding each delta as a `report_chunk` event.
-5. `status: evaluating` → `evaluate_report` (`agents/evaluator.py:58`) rebuilds the research summary truncated to 500 chars per entry and scores relevance, accuracy, source_coverage, coherence, and completeness 1–5, plus an overall score. A JSON parse failure falls back to an all-zero score with `flags: ["Evaluation failed..."]`. Emitted as `evaluation`.
+5. `status: evaluating` → `evaluate_report` (`agents/evaluator.py:121`) rebuilds the research summary truncated to 500 chars per entry and asks for `faithfulness`, `relevance`, `source_coverage`, `coherence`, and `completeness` 1–5, under `response_format={"type": "json_object"}`. `overall_score` is not requested from the model: `parse_evaluation` (`agents/evaluator.py:85`) computes it in Python from `DIMENSION_WEIGHTS` (`agents/evaluator.py:13`) — faithfulness 0.30, relevance 0.25, source_coverage/coherence/completeness 0.15 each — rounded to one decimal. Invalid JSON or any missing/non-numeric dimension returns an all-zero fallback carrying `evaluation_failed: True`. Emitted as `evaluation`.
 6. `save_session` (`database.py:15`) inserts the question, sub-questions, report, and duration into Supabase, off-thread. The insert is still wrapped in `except Exception` — a failed write must not kill an in-flight stream — but `database.py:30` now logs it with `logger.exception` instead of discarding it.
 7. `done`. Any exception in the generator is caught and re-emitted as an `error` event with the raw exception string.
 
@@ -48,7 +48,7 @@ uvicorn main:app --reload
 ## Tests
 
 ```bash
-pytest tests/test_cache.py tests/test_main.py -v   # 11 tests, no API keys needed
+pytest tests/test_cache.py tests/test_main.py tests/test_evaluator_parse.py -v   # 15 tests, no API keys needed
 pytest tests/ -v                                    # full suite — makes live, billed OpenAI + Tavily calls
 ```
 
@@ -56,8 +56,9 @@ CI runs the full suite on every push, including the three integration tests, so 
 
 ## Known limitations
 
-- **The evaluator measures faithfulness, not accuracy.** Its "accuracy" dimension only checks whether the report is supported by the research it was given — never whether that research is true. A confidently wrong source the report faithfully summarizes still scores well. Worse, the judge sees a truncated copy of the inputs: each research summary is cut to 500 characters and capped at three sources, so even the faithfulness check runs against a partial view of what the researchers actually found.
-- **`overall_score` isn't computed by any code.** The prompt asks the model for "a 1–5 weighted average" but no weights are defined anywhere in the repo — whatever number the model returns is passed through unvalidated.
+- **Faithfulness is not accuracy, and the judge only sees part of the inputs.** The dimension is named for what it can actually check — whether the report is supported by the research it was given — but that means a confidently wrong source the report faithfully summarizes still scores well. Nothing here verifies truth. And the judge reads a truncated copy of the inputs: each research summary is cut to 500 characters and capped at three sources, so even the faithfulness check runs against a partial view of what the researchers found.
+- **The weights are a judgement call, not a calibrated result.** `DIMENSION_WEIGHTS` is now explicit and applied in Python, which makes the number auditable and reproducible — but nobody validated 0.30/0.25/0.15/0.15/0.15 against human ratings. It encodes an opinion about what matters, not a measurement.
+- **One judge, same model family.** `gpt-4o-mini` grades a report written by `gpt-4o-mini`. There is no second opinion and no human-rated baseline, so a systematic blind spot shared by writer and judge is invisible to this pipeline by construction.
 - **The cache is wrong twice over.** The planner runs before the cache is checked, so every cache hit still burns a planner LLM call and shows the client sub-questions that don't match the cached research. And a cache hit never emits `research_complete` at all — that event only fires in the miss branch — so the frontend's agent cards stay empty on a hit despite a commit titled "complete agent cards on cache hit."
 - **One search per agent, no retry, no timeout.** Each research agent takes only `tool_calls[0]`; any further tool calls the model makes are silently dropped, and there's no second round of searching after it sees results. Five Tavily results at `search_depth: "basic"` is the entire evidence base per sub-question. Nothing in the app sets a timeout — not the `httpx.AsyncClient`, not any of the four OpenAI clients — so a slow upstream can stall the stream indefinitely. `tenacity` is in `requirements.txt` but never imported.
 - **Session persistence is still dead — it just isn't silent any more.** The
@@ -70,15 +71,15 @@ CI runs the full suite on every push, including the three integration tests, so 
   back, so that log line is the only way the failure surfaces at all. The
   swallowed exception was the real bug — a whole dependency died and produced
   no output for months; the dead project is just what it hid.
-- **Neither JSON-producing prompt is hardened.** The planner does a bare `json.loads`; a markdown-fenced response raises and kills the whole run as an SSE error. The evaluator degrades instead of crashing, but its own fallback returns 0 for every dimension, and `tests/test_evaluator.py` asserts `1 <= scores[dim] <= 5` — meaning the documented degradation path is actually a test failure, not a covered case. Neither prompt uses `response_format={"type": "json_object"}`.
+- **The planner's JSON handling is still unhardened.** It does a bare `json.loads` with no `response_format`, so a markdown-fenced response raises and kills the whole run as an SSE error. The evaluator no longer has this problem — it requests `json_object` and degrades through `parse_evaluation`, whose fallback is covered by `tests/test_evaluator_parse.py` without an API key — but the planner never got the same treatment, and it fails harder, because it runs first and takes the stream down with it.
 - **The endpoint is public and unmetered.** No API key, no rate limit, no per-IP quota — any caller can spend OpenAI and Tavily credits on demand. The CORS allowlist doesn't help here; it constrains browsers, not curl, and one of its three entries is a stale Vercel preview URL.
 - **requirements.txt is a raw `pip freeze`,** not a dependency list — it includes packages like pyiceberg, cryptography, and rich that nothing in the project imports. There's no pyproject.toml and no deployment config in the repo at all (no Dockerfile, no render.yaml); the live Render service is configured entirely outside the codebase.
 - An unmerged `origin/v2` branch has auth, an access chokepoint, and a schema migration for projects/reports/runs/sharing. None of it is on `main`.
 
 ## What I'd build next
 
-- Rename the evaluator's `accuracy` dimension to `faithfulness` so the metric's name matches what it measures.
-- Put the judge behind a provider-independent interface with OpenAI and Claude implementations, keep both score sets separate, and surface disagreement instead of averaging it away — and compute `overall_score` in Python from explicit weights instead of asking the model for it.
+- Give the planner the same treatment the evaluator just got: `response_format={"type": "json_object"}` and a tested pure parser, so a malformed plan degrades instead of killing the stream.
+- Put the judge behind a provider-independent interface with OpenAI and Claude implementations, keep both score sets separate, and surface disagreement instead of averaging it away. Two judges that disagree is information; a mean hides it.
 - Fix the rest of the cache: check it before running the planner, store sub-questions alongside results, and emit `research_complete` on a hit.
 - Re-provision the Supabase project or drop the dependency. The failure is
   logged now, but the code still carries a persistence layer that does nothing.
