@@ -1,7 +1,10 @@
 import asyncio
+import logging
 import os
 
 from supabase import create_client
+
+logger = logging.getLogger(__name__)
 
 supabase = create_client(
     os.getenv("SUPABASE_URL"),
@@ -21,4 +24,7 @@ async def save_session(question: str, sub_questions: list, report: str, duration
             lambda: supabase.table("sessions").insert(data).execute()
         )
     except Exception:
-        pass
+        # Still caught: persistence is not part of the research result, so a
+        # failed insert must not kill an in-flight SSE stream. But it is logged
+        # now — the bare `pass` let this dependency die silently for months.
+        logger.exception("Failed to insert research session into Supabase")
