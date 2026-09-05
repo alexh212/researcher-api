@@ -14,7 +14,7 @@ The hard part is holding a multi-stage, multi-agent pipeline together inside one
 Everything is one endpoint: `GET /api/research/stream?question=...&num_agents=...` in `main.py:70`. It validates at the boundary first — empty question or `num_agents` outside 2–12 returns `HTTPException(400)` before any stream opens — then returns an `EventSourceResponse` emitting JSON-encoded SSE events in order:
 
 1. `status: planning` → `plan_research` (`agents/planner.py:32`) makes one `gpt-4o-mini` call that classifies the query type and returns a bare JSON array of exactly `num_agents` sub-questions. A wrong count or non-list raises `ValueError`. Emitted as `sub_questions`.
-2. `get_cached` (`cache.py:18`) checks Upstash Redis under `research:{question.lower().strip()}`, 24h TTL.
+2. `get_cached` (`cache.py:21`) checks Upstash Redis under `research:{question.lower().strip()}:{num_agents}`, 24h TTL. `num_agents` is in the key because the planner splits the question into exactly that many sub-questions, so the same question at 4 and at 12 agents is genuinely different research.
 3. On a miss: `status: researching` → `orchestrate_research` (`agents/orchestrator.py:5`) runs `asyncio.gather(..., return_exceptions=True)` over `research_sub_question` (`agents/researcher.py:53`). Each agent does one OpenAI function call, executes `search_web` (`search.py:8`, POSTs to `api.tavily.com/search`, `max_results: 5`, `search_depth: "basic"`), and writes a summary from the results. A dead agent becomes an `{"error": True}` placeholder instead of killing the batch. Cached and emitted as `research_complete`.
 4. `status: writing` → `stream_synthesis` (`agents/synthesizer.py:48`) concatenates the summaries (failed sub-questions marked inline, sources capped at three each) and streams one `gpt-4o-mini` completion, forwarding each delta as a `report_chunk` event.
 5. `status: evaluating` → `evaluate_report` (`agents/evaluator.py:58`) rebuilds the research summary truncated to 500 chars per entry and scores relevance, accuracy, source_coverage, coherence, and completeness 1–5, plus an overall score. A JSON parse failure falls back to an all-zero score with `flags: ["Evaluation failed..."]`. Emitted as `evaluation`.
@@ -48,7 +48,7 @@ uvicorn main:app --reload
 ## Tests
 
 ```bash
-pytest tests/test_cache.py tests/test_main.py -v   # 10 tests, no API keys needed
+pytest tests/test_cache.py tests/test_main.py -v   # 11 tests, no API keys needed
 pytest tests/ -v                                    # full suite — makes live, billed OpenAI + Tavily calls
 ```
 
@@ -58,7 +58,7 @@ CI runs the full suite on every push, including the three integration tests, so 
 
 - **The evaluator measures faithfulness, not accuracy.** Its "accuracy" dimension only checks whether the report is supported by the research it was given — never whether that research is true. A confidently wrong source the report faithfully summarizes still scores well. Worse, the judge sees a truncated copy of the inputs: each research summary is cut to 500 characters and capped at three sources, so even the faithfulness check runs against a partial view of what the researchers actually found.
 - **`overall_score` isn't computed by any code.** The prompt asks the model for "a 1–5 weighted average" but no weights are defined anywhere in the repo — whatever number the model returns is passed through unvalidated.
-- **The cache is wrong twice over.** The cache key ignores `num_agents`, so a 12-agent request can be served research cached under a 4-agent run for the same question text. And the planner runs before the cache is checked, so every cache hit still burns a planner LLM call and shows the client sub-questions that don't match the cached research. On top of that, a cache hit never emits `research_complete` at all — that event only fires in the miss branch — so the frontend's agent cards stay empty on a hit despite a commit titled "complete agent cards on cache hit."
+- **The cache is wrong twice over.** The planner runs before the cache is checked, so every cache hit still burns a planner LLM call and shows the client sub-questions that don't match the cached research. And a cache hit never emits `research_complete` at all — that event only fires in the miss branch — so the frontend's agent cards stay empty on a hit despite a commit titled "complete agent cards on cache hit."
 - **One search per agent, no retry, no timeout.** Each research agent takes only `tool_calls[0]`; any further tool calls the model makes are silently dropped, and there's no second round of searching after it sees results. Five Tavily results at `search_depth: "basic"` is the entire evidence base per sub-question. Nothing in the app sets a timeout — not the `httpx.AsyncClient`, not any of the four OpenAI clients — so a slow upstream can stall the stream indefinitely. `tenacity` is in `requirements.txt` but never imported.
 - **Session persistence is dead, and the code can't tell.** The Supabase project
   the app writes to no longer resolves — `NXDOMAIN` on the host in `SUPABASE_URL`.
@@ -77,7 +77,7 @@ CI runs the full suite on every push, including the three integration tests, so 
 
 - Rename the evaluator's `accuracy` dimension to `faithfulness` so the metric's name matches what it measures.
 - Put the judge behind a provider-independent interface with OpenAI and Claude implementations, keep both score sets separate, and surface disagreement instead of averaging it away — and compute `overall_score` in Python from explicit weights instead of asking the model for it.
-- Fix the cache: include `num_agents` in the key, check the cache before running the planner, store sub-questions alongside results, and emit `research_complete` on a hit.
+- Fix the rest of the cache: check it before running the planner, store sub-questions alongside results, and emit `research_complete` on a hit.
 - Log the Supabase failure instead of swallowing it, then either re-provision the
   project or drop the dependency. Right now the code carries a persistence layer
   that does nothing.

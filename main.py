@@ -81,14 +81,14 @@ async def stream_research(question: str, num_agents: int = 4):
             sub_questions = await plan_research(question, num_agents)
             yield {"data": json.dumps({"type": "sub_questions", "data": sub_questions})}
 
-            cached = get_cached(question)
+            cached = get_cached(question, num_agents)
             if cached:
                 yield {"data": json.dumps({"type": "status", "status": "writing", "message": "Found cached results, writing report..."})}
                 results = cached
             else:
                 yield {"data": json.dumps({"type": "status", "status": "researching", "message": "Researching..."})}
                 results = await orchestrate_research(sub_questions)
-                set_cached(question, results)
+                set_cached(question, num_agents, results)
                 yield {"data": json.dumps({"type": "research_complete", "data": results})}
 
             yield {"data": json.dumps({"type": "status", "status": "writing", "message": "Writing report..."})}

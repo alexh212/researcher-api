@@ -11,12 +11,15 @@ redis = Redis(
 CACHE_TTL = 60 * 60 * 24  # 24 hours
 
 
-def make_cache_key(question: str) -> str:
-    return f"research:{question.lower().strip()}"
+def make_cache_key(question: str, num_agents: int) -> str:
+    # num_agents is part of the key because it changes the research itself: the
+    # planner splits the question into exactly that many sub-questions, so a
+    # 4-agent run and a 12-agent run produce different results for one question.
+    return f"research:{question.lower().strip()}:{num_agents}"
 
 
-def get_cached(question: str):
-    key = make_cache_key(question)
+def get_cached(question: str, num_agents: int):
+    key = make_cache_key(question, num_agents)
     try:
         data = redis.get(key)
         if data:
@@ -26,8 +29,8 @@ def get_cached(question: str):
     return None
 
 
-def set_cached(question: str, results: list[dict]):
-    key = make_cache_key(question)
+def set_cached(question: str, num_agents: int, results: list[dict]):
+    key = make_cache_key(question, num_agents)
     try:
         redis.set(key, json.dumps(results), ex=CACHE_TTL)
     except Exception:
