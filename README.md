@@ -1,79 +1,97 @@
-# researcher-api
+# Scout API
 
-A FastAPI service that decomposes a question into sub-questions, researches each one in parallel with GPT-4o-mini agents using Tavily web search, and streams a synthesized markdown report plus an LLM-judge score back over Server-Sent Events.
+Scout breaks a question into smaller research tasks, runs them concurrently, and streams a report to a web interface. This repository contains the FastAPI backend. It uses OpenAI for planning, research, synthesis, and evaluation, with Tavily available as a search tool.
 
-**Status:** prototype
-**Live:** https://researcher-api-bpkt.onrender.com — root, `/docs`, and `/health` all return 200. Frontend: https://researcher-web-nine.vercel.app
+**Status: prototype.** The public endpoint uses paid services and has no application authentication or usage quotas. Use non-sensitive questions for testing.
 
-## The problem
+[Demo](https://researcher-web-nine.vercel.app/) · [API docs](https://researcher-api-bpkt.onrender.com/docs) · [Frontend source](https://github.com/alexh212/researcher-web)
 
-The hard part is holding a multi-stage, multi-agent pipeline together inside one long-lived HTTP response. A single request fans out to up to 12 concurrent OpenAI agents, each able to request a web search through a two-turn function-calling exchange, then funnels back into a streaming synthesis call and a judging pass — while the client needs incremental progress instead of five minutes of silence. That forces every stage to tolerate partial failure without killing the whole run, and it means being honest about what the judging pass can actually prove: its `faithfulness` score only checks whether the report matches the retrieved research, never whether that research is true.
+The backend is hosted at [researcher-api-bpkt.onrender.com](https://researcher-api-bpkt.onrender.com/). Its root and `/health` routes identify the service and confirm that it can respond; they do not check external dependencies.
 
-## How it works
+## Request flow
 
-Everything is one endpoint: `GET /api/research/stream?question=...&num_agents=...` in `main.py:70`. It validates at the boundary first — empty question or `num_agents` outside 2–12 returns `HTTPException(400)` before any stream opens — then returns an `EventSourceResponse` emitting JSON-encoded SSE events in order:
+`GET /api/research/stream?question=...&num_agents=...` accepts a nonempty question and between 2 and 12 agents. The default is 4. Progress and results are sent as Server-Sent Events (SSE).
 
-1. `status: planning` → `plan_research` (`agents/planner.py:32`) makes one `gpt-4o-mini` call that classifies the query type and returns a bare JSON array of exactly `num_agents` sub-questions. A wrong count or non-list raises `ValueError`. Emitted as `sub_questions`.
-2. `get_cached` (`cache.py:21`) checks Upstash Redis under `research:{question.lower().strip()}:{num_agents}`, 24h TTL. `num_agents` is in the key because the planner splits the question into exactly that many sub-questions, so the same question at 4 and at 12 agents is genuinely different research.
-3. On a miss: `status: researching` → `orchestrate_research` (`agents/orchestrator.py:5`) runs `asyncio.gather(..., return_exceptions=True)` over `research_sub_question` (`agents/researcher.py:53`). Each agent calls OpenAI with `tool_choice="auto"`. If the model requests a tool, the agent executes the first tool call using `search_web` (`search.py:8`, POSTs to `api.tavily.com/search`, `max_results: 5`, `search_depth: "basic"`) and makes a second model call to summarize the results. Otherwise it returns the model response with an empty source list; web search is not guaranteed. A dead agent becomes an `{"error": True}` placeholder instead of killing the batch. Cached and emitted as `research_complete`.
-4. `status: writing` → `stream_synthesis` (`agents/synthesizer.py:48`) concatenates the summaries (failed sub-questions marked inline, sources capped at three each) and streams one `gpt-4o-mini` completion, forwarding each delta as a `report_chunk` event.
-5. `status: evaluating` → `evaluate_report` (`agents/evaluator.py:121`) rebuilds the research summary truncated to 500 chars per entry and asks for `faithfulness`, `relevance`, `source_coverage`, `coherence`, and `completeness` 1–5, under `response_format={"type": "json_object"}`. `overall_score` is not requested from the model: `parse_evaluation` (`agents/evaluator.py:85`) computes it in Python from `DIMENSION_WEIGHTS` (`agents/evaluator.py:13`) — faithfulness 0.30, relevance 0.25, source_coverage/coherence/completeness 0.15 each — rounded to one decimal. Invalid JSON or any missing/non-numeric dimension returns an all-zero fallback carrying `evaluation_failed: True`. Emitted as `evaluation`.
-6. `save_session` (`database.py:15`) attempts to insert the question, sub-questions, report, and duration into Supabase, off-thread. The insert is still wrapped in `except Exception` — a failed write must not kill an in-flight stream — but `database.py:30` now logs it with `logger.exception` instead of discarding it.
-7. `done`. Any exception in the generator is caught and re-emitted as an `error` event with the raw exception string.
+1. **Plan.** A planner asks `gpt-4o-mini` to split the question into the requested number of sub-questions.
+2. **Check the cache.** Upstash Redis stores researcher results for 24 hours. The key includes the normalized question and agent count: `research:{question.lower().strip()}:{num_agents}`.
+3. **Research on a cache miss.** `asyncio.gather(..., return_exceptions=True)` runs the researchers concurrently. Each can request a Tavily search through function calling. Search is optional; an agent can return a response without sources. Failed researchers become error entries, and the batch is cached.
+4. **Write and evaluate.** The synthesizer streams the report text. A separate model call evaluates the completed report and returns one structured result. Cached research still gets a fresh report and evaluation.
+5. **Save the session.** The backend attempts to store the question, sub-questions, report, and duration in Supabase. Insert failures are caught and logged without preventing normal stream completion.
 
-`main.py:10` loads `.env` before the local imports because `cache.py`, `database.py`, and `search.py` all read credentials at module scope; `main.py:32` hard-fails with `RuntimeError` at import time if any required var is missing. CORS is a hardcoded three-origin allowlist (`main.py:40`).
+The SSE event types are `status`, `sub_questions`, `research_complete`, `report_chunk`, `evaluation`, `done`, and `error`. Other exceptions in the stream generator end the run with an `error` event containing the exception message. The cache-hit path skips `research_complete` and moves to `writing`.
 
-## Setup
+The route is in [main.py](main.py); the individual stages are in [agents/](agents/). [cache.py](cache.py) handles Redis and [database.py](database.py) handles session storage.
+
+## Evaluation
+
+The judge uses `gpt-4o-mini`, the same model used to write the report. It receives the question, finished report, and research context limited to 500 characters and three source URLs per researcher. It does not open those URLs.
+
+| Dimension | Weight |
+| --- | --- |
+| Faithfulness to the supplied research | 30% |
+| Relevance | 25% |
+| Source coverage | 15% |
+| Coherence | 15% |
+| Completeness | 15% |
+
+The evaluator requests JSON object mode and validates the response in Python. The model supplies the individual scores. Python calculates the weighted average and rounds it to one decimal place. These weights have not been calibrated against human ratings.
+
+[parse_evaluation](agents/evaluator.py) checks for a JSON object containing all five numeric scores, excluding booleans. Invalid responses return `evaluation_failed: true` with a reason and zero placeholders. Those zeros indicate an unusable evaluation, not a low-quality report. Score range and finite-number checks are not implemented.
+
+Faithfulness measures agreement with the supplied research, not independent factual accuracy. The report has already streamed before evaluation begins; the judge does not approve publication or trigger a rewrite. Provider failures follow the route's error path rather than the parser fallback.
+
+## Run locally
 
 ```bash
-git clone https://github.com/alexh212/researcher-api
+git clone https://github.com/alexh212/researcher-api.git
 cd researcher-api
-python3 -m venv venv && source venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# fill in all six values below — main.py raises RuntimeError at import time
-# if any one is empty, so uvicorn won't boot on a partial file
+# Fill in all six environment variables before starting the server.
 uvicorn main:app --reload
-# verify: curl http://127.0.0.1:8000/health -> {"status":"ok"}
-# docs at http://127.0.0.1:8000/docs
 ```
 
-| Variable | Purpose |
-|---|---|
-| `OPENAI_API_KEY` | Powers every LLM call — planning, research, synthesis, evaluation (all `gpt-4o-mini`). |
-| `TAVILY_API_KEY` | Powers the web-search path (`search.py`). A failed search becomes a failed researcher entry; an agent that does not request search can still return a response. |
-| `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST client for the 24h result cache. |
-| `SUPABASE_URL` / `SUPABASE_KEY` | Supabase client used to insert rows into the `sessions` table. |
+| Variable | Used for |
+| --- | --- |
+| `OPENAI_API_KEY` | Planning, research, synthesis, and evaluation |
+| `TAVILY_API_KEY` | Requested web searches |
+| `UPSTASH_REDIS_REST_URL` | Research cache connection |
+| `UPSTASH_REDIS_REST_TOKEN` | Research cache credentials |
+| `SUPABASE_URL` | Session database connection |
+| `SUPABASE_KEY` | Session database credentials |
+
+`load_dotenv()` runs before local imports because several modules create clients at import time. Startup requires all six values, including Supabase settings even when session persistence is not being used successfully.
+
+Open `http://localhost:8000/docs` for the API schema. The CORS allowlist is defined in `main.py`; additional frontend origins require configuration changes.
 
 ## Tests
 
+For the cache-key and parser tests, which make no provider requests:
+
 ```bash
-pytest tests/test_cache.py tests/test_evaluator_parse.py -v  # 9 pure cache-key/parser tests; no network calls
-pytest tests/test_cache.py tests/test_main.py tests/test_evaluator_parse.py -v  # 15 tests; boundary test enters the live pipeline
-pytest tests/ -v                                    # full suite — makes live, billed OpenAI + Tavily calls
+pytest tests/test_cache.py tests/test_evaluator_parse.py -v
 ```
 
-The nine-test command checks local calculations and parsing without making provider calls. The 15-test command also includes `test_num_agents_boundary_values_are_valid`, which submits two valid research requests. `tests/conftest.py` supplies dummy credentials only when variables are absent; it preserves existing credentials, so this command can spend credits and attempt cache/session writes in a configured environment.
+**The following commands can make paid requests and write to configured services:**
 
-CI runs the full suite on pushes to `main` and pull requests targeting `main`, including README-only changes. Planner, orchestrator, evaluator and valid-route tests invoke providers with configured secrets, so CI can spend OpenAI/Tavily credits and provider failures can fail the build. The CI test step also has a dead fallback (`venv/bin/pytest ... || pytest ...`) — the first half can never succeed because the workflow never creates a venv.
+```bash
+pytest tests/test_cache.py tests/test_main.py tests/test_evaluator_parse.py -v
+pytest tests/ -v
+```
 
-## Known limitations
+The route boundary test submits valid research requests. Fixtures supply dummy credentials only when variables are absent, so existing credentials remain active. The full suite also includes live provider tests.
 
-- **Faithfulness is not accuracy, and the judge only sees part of the inputs.** The dimension is named for what it can actually check — whether the report is supported by the research it was given — but that means a confidently wrong source the report faithfully summarizes still scores well. Nothing here verifies truth. And the judge reads a truncated copy of the inputs: each research summary is cut to 500 characters and capped at three sources, so even the faithfulness check runs against a partial view of what the researchers found.
-- **The weights are a judgement call, not a calibrated result.** `DIMENSION_WEIGHTS` is now explicit and applied in Python, which makes the number auditable and reproducible — but nobody validated 0.30/0.25/0.15/0.15/0.15 against human ratings. It encodes an opinion about what matters, not a measurement.
-- **One judge, same model family.** `gpt-4o-mini` grades a report written by `gpt-4o-mini`. There is no second opinion and no human-rated baseline, so a systematic blind spot shared by writer and judge is invisible to this pipeline by construction.
-- **Cache hits still run the planner.** A hit spends a planner LLM call and may show newly generated sub-questions that differ from the cached research. The cache stores researcher results, not the plan. The hit branch does not emit `research_complete`, but the frontend completes its agent cards on `status: writing`, so the cards do not stay empty because of the missing event.
-- **Search is limited and timeout/retry policies use SDK defaults.** An agent executes at most the first requested tool call, with up to five Tavily results at `search_depth: "basic"`, and cannot search again after seeing those results. It may also return without requesting search. The app does not configure its own request timeouts or retry policy: the pinned OpenAI SDK defaults to a 600-second timeout (5-second connect timeout) and two retries for eligible failures; HTTPX defaults to 5-second network-operation timeouts. These are not an overall research-run deadline. The orchestrator does not rerun failed researchers. `tenacity` is listed but not imported by the app.
-- **Deployed session persistence is unresolved.** During the September 7 verification, the Supabase hostname in the local configuration did not resolve. The deployed configuration, database contents and historical writes were not inspected, so this does not establish when persistence failed or whether the project was deleted. `database.py` attempts an insert and catches failures with `logger.exception`, including the traceback. Logging exposes a failed write; it does not repair persistence. Nothing in the app reads sessions back.
-- **The planner's JSON handling is still unhardened.** It does a bare `json.loads` with no `response_format`, so a markdown-fenced response raises and kills the whole run as an SSE error. The evaluator no longer has this problem — it requests `json_object` and degrades through `parse_evaluation`, whose fallback is covered by `tests/test_evaluator_parse.py` without an API key — but the planner never got the same treatment, and it fails harder, because it runs first and takes the stream down with it.
-- **The endpoint is public and unmetered.** No API key, no rate limit, no per-IP quota — any caller can spend OpenAI and Tavily credits on demand. The CORS allowlist doesn't help here; it constrains browsers, not curl, and one of its three entries is a stale Vercel preview URL.
-- **requirements.txt is a raw `pip freeze`,** not a dependency list — it includes packages like pyiceberg, cryptography, and rich that nothing in the project imports. There's no pyproject.toml and no deployment config in the repo at all (no Dockerfile, no render.yaml); the live Render service is configured entirely outside the codebase.
-- An unmerged `origin/v2` branch has auth, an access chokepoint, and a schema migration for projects/reports/runs/sharing. None of it is on `main`.
+CI runs the full suite on pushes to `main` and pull requests targeting it, including documentation-only changes. With configured secrets, CI can spend OpenAI/Tavily credits and attempt cache and session writes. Passing parser tests verifies handling and arithmetic, not the model's judgment quality.
 
-## What I'd build next
+## Current limitations
 
-- Give the planner the same treatment the evaluator just got: `response_format={"type": "json_object"}` and a tested pure parser, so a malformed plan degrades instead of killing the stream.
-- Put the judge behind a provider-independent interface with OpenAI and Claude implementations, keep both score sets separate, and surface disagreement instead of averaging it away. Two judges that disagree is information; a mean hides it.
-- Fix the rest of the cache: check it before running the planner, store sub-questions alongside results, and emit `research_complete` on a hit.
-- Verify the deployed Supabase configuration and whether session history is needed. Restore persistence if required, or remove the dependency deliberately; the current logging change alone does not establish successful saves.
-- Gate the endpoint before anything else — an API key or per-IP rate limit on `/api/research/stream`, plus explicit request timeouts and an overall run budget, so usage and waiting time are bounded beyond SDK defaults.
+- **Cache consistency:** planning happens before lookup. A new plan can differ from the plan that produced cached research, because the cache stores research results without the original plan. Failed researcher entries can also be cached.
+- **Research scope:** each researcher executes at most the first requested tool call, with up to five basic Tavily results. It cannot search again after reading those results. SDK defaults provide some timeout/retry behavior, but there is no application-level run deadline or researcher retry policy.
+- **Planner parsing:** malformed JSON can end the whole run. The planner does not yet have the evaluator's tested parsing fallback.
+- **Persistence:** the locally configured Supabase hostname failed DNS resolution during the September 7 review. Successful deployed saves and historical records remain unverified. The app has no session-history reader.
+- **Public access:** there is no application authentication, rate limit, or per-user quota. CORS is not an access-control or spending limit. Error events can expose raw exception details.
+- **Deployment and dependencies:** Render configuration is maintained outside this repository. `requirements.txt` includes unused packages and needs a dependency cleanup. The separate `v2` branch is not part of `main`.
+
+Next priorities are access and spending controls, more reliable planner parsing, storing plans with cached research, and deciding whether to restore or remove session persistence. Evaluation needs human-reviewed examples before its scores can be treated as a reliable quality measure; comparing independent judges is another possible follow-up.
