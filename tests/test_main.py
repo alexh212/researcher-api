@@ -30,10 +30,18 @@ def test_num_agents_too_high_returns_400():
     assert response.status_code == 400
 
 
-def test_num_agents_boundary_values_are_valid():
-    # 2 and 12 are the valid boundaries — confirm they pass validation
-    # (they'll fail downstream without real API keys, but not with a 400)
+def test_num_agents_boundary_values_are_valid(monkeypatch):
+    # 2 and 12 are the valid boundaries — confirm they pass validation.
+    # Validation runs before the stream opens, so stubbing plan_research to raise
+    # keeps this test on the validation path and off the network: an accepted
+    # value still returns 200, and a rejected one would raise 400 before the
+    # generator is ever built.
+    async def fail_before_network(*args, **kwargs):
+        raise RuntimeError("network calls are not allowed in this test")
+
+    monkeypatch.setattr("main.plan_research", fail_before_network)
+
     r2 = client.get("/api/research/stream?question=test&num_agents=2")
     r12 = client.get("/api/research/stream?question=test&num_agents=12")
-    assert r2.status_code != 400
-    assert r12.status_code != 400
+    assert r2.status_code == 200
+    assert r12.status_code == 200

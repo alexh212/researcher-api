@@ -24,8 +24,11 @@ jobs:
 
       # Only the deterministic tests run here. test_planner, test_orchestrator and
       # test_evaluator call OpenAI and Tavily for real, so running the whole suite
-      # on every push means paying for CI. These three need no credentials:
-      # tests/conftest.py supplies dummy values at import time.
+      # on every push means paying for CI. These three open no sockets at all:
+      # tests/conftest.py supplies dummy credentials at import time, and the one
+      # test that reaches the streaming endpoint stubs out plan_research. Adding
+      # secrets back here would not make them pass any harder — it would only put
+      # live keys next to a job that has no use for them.
       - name: Run tests
         run: |
           pytest tests/test_cache.py tests/test_main.py tests/test_evaluator_parse.py -v
